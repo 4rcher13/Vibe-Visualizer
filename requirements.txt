@@ -1,0 +1,6 @@
+numpy==2.5.1
+PyAudio==0.2.14
+typing_extensions==4.16.0
+winrt-runtime==3.2.1
+winrt-Windows.Foundation==3.2.1
+winrt-Windows.Media.Control==3.2.1
