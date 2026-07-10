@@ -3,14 +3,14 @@ import time
 import asyncio
 import pyaudio
 import numpy as np
-# Importamos las librerías de WinRT que instalaste con éxito
+# Importamos las librerías de WinRT
 from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as SessionManager
 
 # --- CONFIGURACIÓN ---
 CHANNELS = 1
 RATE = 44100
 CHUNK = 1024
-NUM_BARS = 10       # Barras elegidas
+NUM_BARS = 10       # Numero de barras en el visualizador
 MAX_HEIGHT = 8      # Altura máxima de las barras
 
 # --- FUNCIÓN PARA OBTENER CANCIÓN Y ARTISTA ---
