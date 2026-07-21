@@ -15,3 +15,4 @@ Asegúrate de tener un entorno virtual de Python activado y ejecuta el siguiente
 
 ```bash
 pip install -r requirements.txt
+```
