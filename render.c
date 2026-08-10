@@ -2,8 +2,14 @@
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
+#include <windows.h>
 
 #define PI 3.14159265358979323846f
+
+// Minimum peak limit prevents amplification of background silence/noise
+#define MIN_PEAK 0.005f
+// Noise floor in dB below peak_mag
+#define NOISE_FLOOR_DB -36.0f
 
 // UTF-8 representations of vertical sub-character block fills
 static const char* BLOCKS[] = {
@@ -20,6 +26,30 @@ static const char* BLOCKS[] = {
 
 void init_render_state(RenderState *state) {
     memset(state->prev_heights, 0, sizeof(state->prev_heights));
+    state->peak_mag = MIN_PEAK;
+}
+
+// Helper to calculate active console width in columns
+static int get_console_width(void) {
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (GetConsoleScreenBufferInfo(hConsole, &csbi)) {
+        int w = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+        if (w > 0) return w;
+    }
+    // Fallback: try opening CONOUT$ directly
+    HANDLE hConOut = CreateFileA("CONOUT$", GENERIC_READ | GENERIC_WRITE,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                 NULL, OPEN_EXISTING, 0, NULL);
+    if (hConOut != INVALID_HANDLE_VALUE) {
+        if (GetConsoleScreenBufferInfo(hConOut, &csbi)) {
+            int w = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+            CloseHandle(hConOut);
+            if (w > 0) return w;
+        }
+        CloseHandle(hConOut);
+    }
+    return 80;
 }
 
 // Helper to interpolate colors (Neon Blue -> Purple -> Neon Pink)
@@ -43,11 +73,17 @@ void get_row_color(int row, int max_rows, int *r_out, int *g_out, int *b_out) {
 void render_frame(const Complex *fft_result, int fft_size, RenderState *state, const char *title, const char *artist) {
     float raw_heights[NUM_BARS] = {0};
     
-    // Group 512 positive frequency bins logarithmically
+    // Group positive frequency bins logarithmically
     int num_bins = fft_size / 2;
     int low_cutoff = 2;     // Ignore DC & sub-bass noise
     int high_cutoff = 180;  // High frequency cutoff (standard active music range)
     
+    float bin_mags[NUM_BARS] = {0};
+    float max_mag_this_frame = 0.0f;
+
+    // Normalization factor for FFT magnitude (from 16-bit short [-32768, 32767])
+    float norm_factor = 32768.0f * (fft_size / 2.0f);
+
     for (int i = 0; i < NUM_BARS; i++) {
         // Logarithmic bounds calculation
         float f_start = low_cutoff * powf((float)high_cutoff / low_cutoff, (float)i / NUM_BARS);
@@ -64,11 +100,34 @@ void render_frame(const Complex *fft_result, int fft_size, RenderState *state, c
             sum += mag;
         }
         float avg = sum / (end_bin - start_bin);
-        
-        // Scale and apply a soft logarithmic compression to the amplitude
+        float norm_mag = avg / norm_factor;
+        bin_mags[i] = norm_mag;
+
+        if (norm_mag > max_mag_this_frame) {
+            max_mag_this_frame = norm_mag;
+        }
+    }
+
+    // Dynamic peak tracking (peak decay with minimum limit)
+    if (max_mag_this_frame > state->peak_mag) {
+        state->peak_mag = max_mag_this_frame;
+    } else {
+        state->peak_mag *= 0.985f; // Dynamic decay factor
+        if (state->peak_mag < MIN_PEAK) {
+            state->peak_mag = MIN_PEAK;
+        }
+    }
+
+    for (int i = 0; i < NUM_BARS; i++) {
+        float norm_mag = bin_mags[i];
         float val = 0.0f;
-        if (avg > 0.0f) {
-            val = log10f(1.0f + avg * 0.02f) * 12.0f; // Scale it to max height
+        
+        // Silence check & logarithmic scale (dB)
+        if (norm_mag > 0.00005f) {
+            float db = 20.0f * log10f(norm_mag / state->peak_mag);
+            if (db > NOISE_FLOOR_DB) {
+                val = ((db - NOISE_FLOOR_DB) / (-NOISE_FLOOR_DB)) * MAX_HEIGHT;
+            }
         }
         
         if (val > MAX_HEIGHT) val = (float)MAX_HEIGHT;
@@ -97,6 +156,17 @@ void render_frame(const Complex *fft_result, int fft_size, RenderState *state, c
     char buffer[8192];
     int offset = 0;
     
+    // Calculate console width & horizontal offset for horizontal centering
+    int console_width = get_console_width();
+    int total_width = NUM_BARS * 4;
+    int horizontal_offset = (console_width - total_width) / 2;
+    if (horizontal_offset < 0) horizontal_offset = 0;
+
+    char left_pad[256] = {0};
+    for (int p = 0; p < horizontal_offset && p < 255; p++) {
+        left_pad[p] = ' ';
+    }
+
     // Cursor to top-left (ANSI escape sequence)
     offset += sprintf(buffer + offset, "\033[H");
     
@@ -105,6 +175,9 @@ void render_frame(const Complex *fft_result, int fft_size, RenderState *state, c
         // Calculate gradient color for this row
         int r_val, g_val, b_val;
         get_row_color(row, MAX_HEIGHT, &r_val, &g_val, &b_val);
+        
+        // Add left padding for centering
+        offset += sprintf(buffer + offset, "%s", left_pad);
         
         // Set row color (ANSI 24-bit Truecolor foreground)
         offset += sprintf(buffer + offset, "\033[38;2;%d;%d;%dm", r_val, g_val, b_val);
@@ -129,7 +202,7 @@ void render_frame(const Complex *fft_result, int fft_size, RenderState *state, c
         offset += sprintf(buffer + offset, "\033[0m\n"); // Reset color and new line
     }
     
-    // Print metadata
+    // Print metadata centered
     offset += sprintf(buffer + offset, "\n");
     
     char info_line[256];
@@ -139,11 +212,11 @@ void render_frame(const Complex *fft_result, int fft_size, RenderState *state, c
         sprintf(info_line, "🎵 Silencio o Desconocido");
     }
     
-    int total_width = NUM_BARS * 4;
     int len = (int)strlen(info_line);
     int padding = (total_width - len) / 2;
     if (padding < 0) padding = 0;
     
+    offset += sprintf(buffer + offset, "%s", left_pad);
     for (int p = 0; p < padding; p++) {
         offset += sprintf(buffer + offset, " ");
     }
@@ -156,6 +229,8 @@ void render_frame(const Complex *fft_result, int fft_size, RenderState *state, c
     int footer_len = (int)strlen(footer);
     int footer_padding = (total_width - footer_len) / 2;
     if (footer_padding < 0) footer_padding = 0;
+    
+    offset += sprintf(buffer + offset, "%s", left_pad);
     for (int p = 0; p < footer_padding; p++) {
         offset += sprintf(buffer + offset, " ");
     }
@@ -164,3 +239,4 @@ void render_frame(const Complex *fft_result, int fft_size, RenderState *state, c
     printf("%s", buffer);
     fflush(stdout);
 }
+

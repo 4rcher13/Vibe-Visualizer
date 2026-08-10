@@ -2,8 +2,8 @@ import sys
 import asyncio
 import os
 import mmap
-import time
 import ctypes
+from typing import NamedTuple, cast
 
 # Import Windows Runtime APIs
 try:
@@ -16,19 +16,25 @@ except ImportError:
 SHM_NAME = "VibeVisualizerMetadata"
 SHM_SIZE = 512
 
-async def get_media_info():
+
+class MediaProperties(NamedTuple):
+    title: str
+    artist: str
+
+async def get_media_info() -> tuple[str, str]:
     try:
         manager = await SessionManager.request_async()
         current_session = manager.get_current_session()
         if current_session:
             info = await current_session.try_get_media_properties_async()
             if info:
-                return info.title, info.artist
-    except Exception as e:
+                media_info = cast(MediaProperties, info)
+                return media_info.title, media_info.artist
+    except Exception:
         pass
     return "", ""
 
-def check_parent_alive(parent_pid):
+def check_parent_alive(parent_pid: int) -> bool:
     # Check if process is still active on Windows
     try:
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -45,7 +51,7 @@ def check_parent_alive(parent_pid):
         return True
 
 async def main():
-    parent_pid = os.getppid()
+    parent_pid: int = os.getppid()
     
     # Create or open named shared memory on Windows
     # tagname specifies the name of the mapping object

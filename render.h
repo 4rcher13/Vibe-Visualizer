@@ -8,6 +8,7 @@
 
 typedef struct {
     float prev_heights[NUM_BARS];
+    float peak_mag;
 } RenderState;
 
 // Initialize render state

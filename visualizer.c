@@ -3,19 +3,19 @@
 #include <windows.h> 
 #include <time.h>
 #include <math.h>
-#include <portaudio.h> 
 
 #include "fft.h"
 #include "window.h"
 #include "metadata.h"
 #include "render.h"
+#include "audio_capture.h"
 
 #define SAMPLE_RATE 44100 
 #define FRAMES_PER_BUFFER 1024 
 
 // Global variables for cleanup in control handler
 volatile int running = 1;
-PaStream *stream = NULL;
+WasapiCapture capture;
 PROCESS_INFORMATION piPython;
 BOOL pythonSpawned = FALSE;
 
@@ -37,13 +37,8 @@ void cleanUp() {
         pythonSpawned = FALSE;
     }
     
-    // 2. Stop and close PortAudio
-    if (stream) {
-        Pa_StopStream(stream);
-        Pa_CloseStream(stream);
-        stream = NULL;
-    }
-    Pa_Terminate();
+    // 2. Stop and clean up WASAPI loopback capture
+    wasapi_cleanup(&capture);
     
     // 3. Reset console cursor and clean up formatting
     printf("\033[?25h\033[0m\nVisualizador finalizado. ¡Hasta luego!\n");
@@ -66,29 +61,9 @@ int main() {
     printf("Iniciando visualizador...\n");
     Sleep(500);
 
-    // Initialize PortAudio
-    PaError err = Pa_Initialize();
-    if (err != paNoError) {
-        fprintf(stderr, "Error al inicializar PortAudio: %s\n", Pa_GetErrorText(err));
-        printf("\033[?25h");
-        return 1;
-    }
-
-    // Open audio stream: 1 input channel (micro/stereo mix), 0 output channels
-    err = Pa_OpenDefaultStream(&stream, 1, 0, paInt16, SAMPLE_RATE, FRAMES_PER_BUFFER, NULL, NULL);
-    if (err != paNoError) {
-        fprintf(stderr, "Error al abrir el flujo de audio: %s\n", Pa_GetErrorText(err));
-        Pa_Terminate();
-        printf("\033[?25h");
-        return 1;
-    }
-
-    // Start streaming
-    err = Pa_StartStream(stream);
-    if (err != paNoError) {
-        fprintf(stderr, "Error al iniciar el flujo de audio: %s\n", Pa_GetErrorText(err));
-        Pa_CloseStream(stream);
-        Pa_Terminate();
+    // Initialize WASAPI loopback capture (system audio output)
+    if (!wasapi_init(&capture)) {
+        fprintf(stderr, "Error: No se pudo inicializar la captura de audio WASAPI.\n");
         printf("\033[?25h");
         return 1;
     }
@@ -122,14 +97,8 @@ int main() {
     
     // Main visualizer loop
     while (running) {
-        // Read input samples synchronously from PortAudio
-        err = Pa_ReadStream(stream, audioBuffer, FRAMES_PER_BUFFER);
-        if (err != paNoError && err != paInputOverflowed) {
-            // If error, break or ignore overflow
-            if (err != paNoError) {
-                break;
-            }
-        }
+        // Read audio samples from WASAPI loopback (system audio)
+        wasapi_read(&capture, audioBuffer, FRAMES_PER_BUFFER);
         
         // 1. Apply Hann Window to reduce spectral leakage
         apply_hann_window(audioBuffer, fftBuffer, FRAMES_PER_BUFFER);
@@ -147,7 +116,7 @@ int main() {
         render_frame(fftBuffer, FRAMES_PER_BUFFER, &renderState, currentTitle, currentArtist);
         
         // Sleep to throttle frame rate to ~60 FPS
-        // PortAudio read blocks for ~23ms anyway (1024 / 44100), so sleeping 10ms is perfect
+        // WASAPI read blocks for ~23ms anyway (1024 / 44100), so sleeping 10ms is perfect
         Sleep(10);
     }
 
