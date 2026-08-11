@@ -21,7 +21,7 @@ class MediaProperties(NamedTuple):
     title: str
     artist: str
 
-async def get_media_info() -> tuple[str, str]:
+async def get_media_info():
     try:
         manager = await SessionManager.request_async()
         current_session = manager.get_current_session()
@@ -30,9 +30,8 @@ async def get_media_info() -> tuple[str, str]:
             if info:
                 media_info = cast(MediaProperties, info)
                 return media_info.title, media_info.artist
-    except Exception:
-        pass
-    return "", ""
+    except Exception as e:
+        print(f"Error al obtener información de medios: {e}")
 
 def check_parent_alive(parent_pid: int) -> bool:
     # Check if process is still active on Windows
@@ -60,10 +59,7 @@ async def main():
     except Exception as e:
         print(f"Error al crear memoria compartida: {e}")
         return
-
-    last_title = ""
-    last_artist = ""
-    
+        
     try:
         while True:
             # Check if parent C program is still alive
