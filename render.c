@@ -17,15 +17,15 @@
 
 // UTF-8 representations of vertical sub-character block fills
 static const char* BLOCKS[] = {
-    " ",       // empty
-    "\u2581",  // 1/8
-    "\u2582",  // 2/8
-    "\u2583",  // 3/8
-    "\u2584",  // 4/8
-    "\u2585",  // 5/8
-    "\u2586",  // 6/8
-    "\u2587",  // 7/8
-    "\u2588"   // full 8/8
+    " ",           // empty
+    "\xE2\x96\x81", // 1/8
+    "\xE2\x96\x82", // 2/8
+    "\xE2\x96\x83", // 3/8
+    "\xE2\x96\x84", // 4/8
+    "\xE2\x96\x85", // 5/8
+    "\xE2\x96\x86", // 6/8
+    "\xE2\x96\x87", // 7/8
+    "\xE2\x96\x88"  // full 8/8
 };
 
 static float clampf(float val, float min_val, float max_val) {
@@ -204,7 +204,7 @@ void render_frame(const Complex *fft_result, int fft_size, RenderState *state, c
     }
     
     // 6. Memory Buffer Render (ANSI 24-bit Truecolor UTF-8 blocks with dynamic centering)
-    char buffer[8192];
+    char buffer[32768];
     int offset = 0;
     
     int console_width = get_console_width();

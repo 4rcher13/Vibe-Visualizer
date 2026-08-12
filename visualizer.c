@@ -116,6 +116,18 @@ int main(int argc, char *argv[]) {
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
     
+    // Enable ANSI/VT escape sequence processing on the console output handle.
+    // Without this, CMD may render escape codes as literal text instead of
+    // interpreting them as cursor/color commands, breaking the visualizer display.
+    {
+        HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+        DWORD dwMode = 0;
+        if (hOut != INVALID_HANDLE_VALUE && GetConsoleMode(hOut, &dwMode)) {
+            dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+            SetConsoleMode(hOut, dwMode);
+        }
+    }
+    
     // Run synthetic test if requested via CLI flag
     if (test_sine) {
         return run_synthetic_test(noise_reduction, debug_mode);
