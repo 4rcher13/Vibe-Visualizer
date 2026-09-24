@@ -28,4 +28,3 @@ void set_noise_reduction(RenderState *state, int noise_reduction);
 void render_frame(const Complex *fft_result, int fft_size, RenderState *state, const char *title, const char *artist);
 
 #endif // RENDER_H
-

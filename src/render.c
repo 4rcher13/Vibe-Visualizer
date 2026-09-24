@@ -110,7 +110,7 @@ void render_frame(const Complex *fft_result, int fft_size, RenderState *state, c
     float dt = (float)(count.QuadPart - state->last_counter.QuadPart) / (float)freq.QuadPart;
     state->last_counter = count;
     
-    // Clamp dt to reasonable bounds (1ms to 100ms) to handle pauses/resizing gracefully
+    // Clamp dt to reasonable bounds (1ms to 100ms)
     dt = clampf(dt, 0.001f, 0.1f);
     float fps = 1.0f / dt;
     
@@ -169,16 +169,16 @@ void render_frame(const Complex *fft_result, int fft_size, RenderState *state, c
     // 4. Autosens (Dynamic Sensitivity Adjustment with Hysteresis & Silence Gate)
     if (frame_energy >= 1e-5f * norm_factor) {
         if (bar_max >= (float)MAX_HEIGHT) {
-            // Rapid response down when hitting ceiling (prevents clipping)
+            // Rapid response down when hitting ceiling
             state->sens *= 0.98f;
         } else if (bar_max < TARGET_HEIGHT && bar_max > 0.5f) {
-            // Slow response up when audio is quiet (prevents pumping)
+            // Slow response up when audio is quiet
             state->sens *= 1.002f;
         }
         state->sens = clampf(state->sens, SENS_MIN, SENS_MAX);
     }
     
-    // 5. Separate Integral Filter (Rising) vs Gravity Fall-off (Falling) normalized by dt
+    // 5. Separate Integral Filter (Rising) vs Gravity Fall-off (Falling)
     for (int i = 0; i < NUM_BARS; i++) {
         float target = raw_heights[i];
         
@@ -186,13 +186,12 @@ void render_frame(const Complex *fft_result, int fft_size, RenderState *state, c
             // RISING: Temporal Integral Filter Smoothing
             float alpha = 1.0f - powf(state->integral_weight, dt * 60.0f);
             state->bars[i] += (target - state->bars[i]) * alpha;
-            state->fall_velocity[i] = 0.0f; // Reset fall acceleration
+            state->fall_velocity[i] = 0.0f;
         } else {
             // FALLING: Gravity Physical Acceleration (* dt)
             state->fall_velocity[i] += state->gravity_accel * dt;
             state->bars[i] -= state->fall_velocity[i] * dt;
             
-            // Floor clamp to target height to prevent undershoot
             if (state->bars[i] < target) {
                 state->bars[i] = target;
                 state->fall_velocity[i] = 0.0f;
@@ -220,7 +219,7 @@ void render_frame(const Complex *fft_result, int fft_size, RenderState *state, c
     // Reset cursor to top-left
     offset += sprintf(buffer + offset, "\033[H");
     
-    // Render Debug Overlay if enabled
+    // Render Debug Overlay only if explicitly enabled
     if (state->debug_mode) {
         offset += sprintf(buffer + offset, "%s\033[93m[DEBUG] sens: %.2f | nr: %d | bar_max: %.2f | dt: %.4fs (%.1f FPS)\033[0m\033[K\n",
                           left_pad, state->sens, state->noise_reduction, bar_max, dt, fps);
@@ -251,14 +250,23 @@ void render_frame(const Complex *fft_result, int fft_size, RenderState *state, c
         offset += sprintf(buffer + offset, "\033[0m\033[K\n");
     }
     
-    // Render metadata line centered
-    offset += sprintf(buffer + offset, "\n");
+    // 7. Visual Spacing / Breathing Room between bars and metadata line
+    // Adding 2 empty lines for clean vertical separation
+    offset += sprintf(buffer + offset, "\033[K\n\033[K\n");
     
-    char info_line[256];
-    if (strlen(title) > 0) {
-        sprintf(info_line, "🎵 %s - %s", title, artist);
+    // 8. Render only the Artist and Song Title
+    char info_line[256] = {0};
+    int has_title = (title && strlen(title) > 0);
+    int has_artist = (artist && strlen(artist) > 0);
+    
+    if (has_title && has_artist) {
+        snprintf(info_line, sizeof(info_line), "🎵 %s - %s", artist, title);
+    } else if (has_title) {
+        snprintf(info_line, sizeof(info_line), "🎵 %s", title);
+    } else if (has_artist) {
+        snprintf(info_line, sizeof(info_line), "🎵 %s", artist);
     } else {
-        sprintf(info_line, "🎵 Silencio o Desconocido");
+        snprintf(info_line, sizeof(info_line), "🎵 Esperando reproducción...");
     }
     
     int len = (int)strlen(info_line);
@@ -269,22 +277,11 @@ void render_frame(const Complex *fft_result, int fft_size, RenderState *state, c
     for (int p = 0; p < padding; p++) {
         offset += sprintf(buffer + offset, " ");
     }
-    offset += sprintf(buffer + offset, "\033[38;2;255;105;180m%s\033[0m\033[K\n", info_line);
+    offset += sprintf(buffer + offset, "\033[1;38;2;255;105;180m%s\033[0m\033[K\n", info_line);
     
-    // Render footer centered
-    char footer[] = "Presiona Ctrl+C para salir.";
-    int footer_len = (int)strlen(footer);
-    int footer_padding = (total_width - footer_len) / 2;
-    if (footer_padding < 0) footer_padding = 0;
-    
-    offset += sprintf(buffer + offset, "%s", left_pad);
-    for (int p = 0; p < footer_padding; p++) {
-        offset += sprintf(buffer + offset, " ");
-    }
-    offset += sprintf(buffer + offset, "\033[90m%s\033[0m\033[K\n", footer);
+    // Clear any extra residual lines below
+    offset += sprintf(buffer + offset, "\033[K\n");
     
     printf("%s", buffer);
     fflush(stdout);
 }
-
-

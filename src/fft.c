@@ -3,7 +3,7 @@
 
 #define PI 3.14159265358979323846f
 
-unsigned int reverseBits(unsigned int num, unsigned int log2n) {
+static unsigned int reverseBits(unsigned int num, unsigned int log2n) {
     unsigned int reverse_num = 0;
     for (unsigned int i = 0; i < log2n; i++) {
         if ((num & (1 << i))) {

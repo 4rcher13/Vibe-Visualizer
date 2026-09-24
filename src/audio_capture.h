@@ -34,7 +34,7 @@ typedef struct {
 // Initialize WASAPI loopback capture.
 // Opens the default render endpoint with AUDCLNT_STREAMFLAGS_LOOPBACK,
 // allocates the ring buffer, and starts the audio client.
-// Returns 1 on success, 0 on failure (error printed to stderr).
+// Returns 1 on success, 0 on failure.
 int wasapi_init(WasapiCapture *cap);
 
 // Read exactly 'frames' mono int16 samples into 'buffer'.

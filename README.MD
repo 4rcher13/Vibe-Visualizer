@@ -19,12 +19,21 @@ Vibe-Visualizer fue inspirado al proyecto [CAVA](https://github.com/karlstav/cav
 Windows Terminal, la captura de audio mediante WASAPI loopback
 y la integración de metadatos multimedia.
 
-## Requisitos e Instalación
+## Requisitos, Compilación y Ejecución
 
-Asegúrate de tener un entorno virtual de Python activado y ejecuta el siguiente comando para instalar las dependencias necesarias:
-
+1. Asegúrate de tener un entorno virtual de Python activado e instala las dependencias:
 ```bash
 pip install -r requirements.txt
+```
+
+2. Para compilar el visualizador ejecuta:
+```bash
+.\build.bat
+```
+
+3. Ejecuta el visualizador:
+```bash
+.\visualizador.exe
 ```
 
 <div align="center">
