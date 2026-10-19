@@ -16,6 +16,8 @@ typedef struct {
     float gravity_accel;
     int debug_mode;
     LARGE_INTEGER last_counter;
+    int last_width;
+    int last_height;
 } RenderState;
 
 // Initialize render state with noise reduction (0-100) and debug mode flag

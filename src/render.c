@@ -56,17 +56,24 @@ void init_render_state(RenderState *state, int noise_reduction, int debug_mode) 
     memset(state->fall_velocity, 0, sizeof(state->fall_velocity));
     state->sens = 1.0f;
     state->debug_mode = debug_mode;
+    state->last_width = 0;
+    state->last_height = 0;
     set_noise_reduction(state, noise_reduction);
     QueryPerformanceCounter(&state->last_counter);
 }
 
-// Helper to calculate active console width in columns
-static int get_console_width(void) {
+// Helper to calculate active console width and height
+static void get_console_size(int *width_out, int *height_out) {
     CONSOLE_SCREEN_BUFFER_INFO csbi;
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
     if (GetConsoleScreenBufferInfo(hConsole, &csbi)) {
         int w = csbi.srWindow.Right - csbi.srWindow.Left + 1;
-        if (w > 0) return w;
+        int h = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+        if (w > 0 && h > 0) {
+            *width_out = w;
+            *height_out = h;
+            return;
+        }
     }
     // Fallback: try opening CONOUT$ directly
     HANDLE hConOut = CreateFileA("CONOUT$", GENERIC_READ | GENERIC_WRITE,
@@ -75,17 +82,103 @@ static int get_console_width(void) {
     if (hConOut != INVALID_HANDLE_VALUE) {
         if (GetConsoleScreenBufferInfo(hConOut, &csbi)) {
             int w = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+            int h = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
             CloseHandle(hConOut);
-            if (w > 0) return w;
+            if (w > 0 && h > 0) {
+                *width_out = w;
+                *height_out = h;
+                return;
+            }
         }
         CloseHandle(hConOut);
     }
-    return 80;
+    *width_out = 80;
+    *height_out = 24;
+}
+
+// Calculate visual display width of UTF-8 strings in terminal cells
+static int utf8_display_width(const char *s) {
+    int width = 0;
+    while (*s) {
+        unsigned char c = (unsigned char)*s;
+        if (c < 0x80) {
+            width += 1;
+            s += 1;
+        } else if ((c & 0xE0) == 0xC0) {
+            width += 1;
+            s += 2;
+        } else if ((c & 0xF0) == 0xE0) {
+            width += 1;
+            s += 3;
+        } else if ((c & 0xF8) == 0xF0) {
+            width += 2;
+            s += 4;
+        } else {
+            s++;
+        }
+    }
+    return width;
+}
+
+// Truncate UTF-8 string to a maximum display cell width, appending "..." if truncated
+static void truncate_to_display_width(const char *src, char *dest, int max_dest_bytes, int max_display_width) {
+    int cur_width = 0;
+    int s_idx = 0;
+    int d_idx = 0;
+    int total_width = utf8_display_width(src);
+    
+    if (total_width <= max_display_width) {
+        strncpy(dest, src, max_dest_bytes - 1);
+        dest[max_dest_bytes - 1] = '\0';
+        return;
+    }
+    
+    int target_width = max_display_width - 3;
+    if (target_width < 1) target_width = 1;
+    
+    while (src[s_idx] && d_idx < max_dest_bytes - 5) {
+        unsigned char c = (unsigned char)src[s_idx];
+        int char_bytes = 1;
+        int char_width = 1;
+        
+        if (c < 0x80) {
+            char_bytes = 1;
+            char_width = 1;
+        } else if ((c & 0xE0) == 0xC0) {
+            char_bytes = 2;
+            char_width = 1;
+        } else if ((c & 0xF0) == 0xE0) {
+            char_bytes = 3;
+            char_width = 1;
+        } else if ((c & 0xF8) == 0xF0) {
+            char_bytes = 4;
+            char_width = 2;
+        }
+        
+        if (cur_width + char_width > target_width) {
+            break;
+        }
+        
+        for (int b = 0; b < char_bytes && src[s_idx + b]; b++) {
+            dest[d_idx++] = src[s_idx + b];
+        }
+        s_idx += char_bytes;
+        cur_width += char_width;
+    }
+    
+    dest[d_idx++] = '.';
+    dest[d_idx++] = '.';
+    dest[d_idx++] = '.';
+    dest[d_idx] = '\0';
 }
 
 // Helper to interpolate colors (Neon Blue -> Purple -> Neon Pink)
 static void get_row_color(int row, int max_rows, int *r_out, int *g_out, int *b_out) {
-    float t = (float)row / (max_rows - 1);
+    if (max_rows <= 1) {
+        *r_out = 138; *g_out = 43; *b_out = 226;
+        return;
+    }
+    float t = (float)row / (float)(max_rows - 1);
     if (t < 0.5f) {
         // Neon Blue (0, 191, 255) to Purple (138, 43, 226)
         float t2 = t * 2.0f;
@@ -113,6 +206,35 @@ void render_frame(const Complex *fft_result, int fft_size, RenderState *state, c
     // Clamp dt to reasonable bounds (1ms to 100ms)
     dt = clampf(dt, 0.001f, 0.1f);
     float fps = 1.0f / dt;
+
+    // Detect console size
+    int console_width, console_height;
+    get_console_size(&console_width, &console_height);
+
+    // Detect window resize: immediately clear screen to eliminate ghosting & buffer reflow artifacts
+    if (console_width != state->last_width || console_height != state->last_height) {
+        state->last_width = console_width;
+        state->last_height = console_height;
+        
+        HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+        CONSOLE_SCREEN_BUFFER_INFO csbi;
+        if (GetConsoleScreenBufferInfo(hConsole, &csbi)) {
+            DWORD written;
+            DWORD cells = csbi.dwSize.X * csbi.dwSize.Y;
+            COORD origin = {0, 0};
+            FillConsoleOutputCharacterA(hConsole, ' ', cells, origin, &written);
+            FillConsoleOutputAttribute(hConsole, csbi.wAttributes, cells, origin, &written);
+            SetConsoleCursorPosition(hConsole, origin);
+        }
+        printf("\033[2J\033[3J\033[H");
+        fflush(stdout);
+    }
+
+    // Dynamic height calculation: guarantee total rendered lines never exceed console_height
+    int non_bar_lines = (state->debug_mode ? 1 : 0) + (console_height >= 16 ? 3 : 2) + 1;
+    int active_height = console_height - non_bar_lines;
+    if (active_height > MAX_HEIGHT) active_height = MAX_HEIGHT;
+    if (active_height < 3) active_height = 3;
     
     // 2. Group positive frequency bins logarithmically (20 Hz - 18000 Hz)
     int num_bins = fft_size / 2;
@@ -157,21 +279,22 @@ void render_frame(const Complex *fft_result, int fft_size, RenderState *state, c
             if (scaled_mag > 1e-7f) {
                 float db = 20.0f * log10f(scaled_mag);
                 if (db > NOISE_FLOOR_DB) {
-                    val = ((db - NOISE_FLOOR_DB) / (-NOISE_FLOOR_DB)) * MAX_HEIGHT;
+                    val = ((db - NOISE_FLOOR_DB) / (-NOISE_FLOOR_DB)) * (float)active_height;
                 }
             }
         }
-        val = clampf(val, 0.0f, (float)MAX_HEIGHT);
+        val = clampf(val, 0.0f, (float)active_height);
         raw_heights[i] = val;
         if (val > bar_max) bar_max = val;
     }
     
     // 4. Autosens (Dynamic Sensitivity Adjustment with Hysteresis & Silence Gate)
+    float target_height = (float)active_height * 0.85f;
     if (frame_energy >= 1e-5f * norm_factor) {
-        if (bar_max >= (float)MAX_HEIGHT) {
+        if (bar_max >= (float)active_height) {
             // Rapid response down when hitting ceiling
             state->sens *= 0.98f;
-        } else if (bar_max < TARGET_HEIGHT && bar_max > 0.5f) {
+        } else if (bar_max < target_height && bar_max > 0.5f) {
             // Slow response up when audio is quiet
             state->sens *= 1.002f;
         }
@@ -179,6 +302,7 @@ void render_frame(const Complex *fft_result, int fft_size, RenderState *state, c
     }
     
     // 5. Separate Integral Filter (Rising) vs Gravity Fall-off (Falling)
+    float gravity_scaled = state->gravity_accel * ((float)active_height / (float)MAX_HEIGHT);
     for (int i = 0; i < NUM_BARS; i++) {
         float target = raw_heights[i];
         
@@ -189,7 +313,7 @@ void render_frame(const Complex *fft_result, int fft_size, RenderState *state, c
             state->fall_velocity[i] = 0.0f;
         } else {
             // FALLING: Gravity Physical Acceleration (* dt)
-            state->fall_velocity[i] += state->gravity_accel * dt;
+            state->fall_velocity[i] += gravity_scaled * dt;
             state->bars[i] -= state->fall_velocity[i] * dt;
             
             if (state->bars[i] < target) {
@@ -202,82 +326,151 @@ void render_frame(const Complex *fft_result, int fft_size, RenderState *state, c
         }
     }
     
-    // 6. Memory Buffer Render (ANSI 24-bit Truecolor UTF-8 blocks with dynamic centering)
-    char buffer[32768];
-    int offset = 0;
-    
-    int console_width = get_console_width();
-    int total_width = NUM_BARS * 4;
+    // 6. Memory Buffer Render (Responsive Bar Width, Spacing, and Dynamic Centering)
+    int usable_width = console_width - 2;
+    if (usable_width < 6) usable_width = 6;
+
+    int num_bars = NUM_BARS;
+    int bar_block_width = 1;
+    int bar_lead_spaces = 0;
+    int bar_trail_spaces = 1;
+
+    // Adapt bar layout so it never wraps regardless of window width
+    if (usable_width >= 140) {
+        bar_block_width = 2;
+        bar_lead_spaces = 0;
+        bar_trail_spaces = 4; // 6 cols per bar -> 120 cols
+    } else if (usable_width >= 105) {
+        bar_block_width = 2;
+        bar_lead_spaces = 0;
+        bar_trail_spaces = 3; // 5 cols per bar -> 100 cols
+    } else if (usable_width >= 84) {
+        bar_block_width = 1;
+        bar_lead_spaces = 1;
+        bar_trail_spaces = 2; // 4 cols per bar (" %s  ") -> 80 cols
+    } else if (usable_width >= 64) {
+        bar_block_width = 1;
+        bar_lead_spaces = 1;
+        bar_trail_spaces = 1; // 3 cols per bar (" %s ") -> 60 cols
+    } else if (usable_width >= 44) {
+        bar_block_width = 1;
+        bar_lead_spaces = 0;
+        bar_trail_spaces = 1; // 2 cols per bar ("%s ") -> 40 cols
+    } else if (usable_width >= 22) {
+        bar_block_width = 1;
+        bar_lead_spaces = 0;
+        bar_trail_spaces = 0; // 1 col per bar ("%s") -> 20 cols
+    } else {
+        // Ultra-narrow window: scale rendered bars down to fit exactly
+        bar_block_width = 1;
+        bar_lead_spaces = 0;
+        bar_trail_spaces = 0;
+        num_bars = usable_width;
+        if (num_bars < 4) num_bars = 4;
+    }
+
+    int col_width = bar_lead_spaces + bar_block_width + bar_trail_spaces;
+    int total_width = num_bars * col_width;
     int horizontal_offset = (console_width - total_width) / 2;
-    if (horizontal_offset < 0) horizontal_offset = 0;
-    
+    if (horizontal_offset < 1) horizontal_offset = 1;
+    if (horizontal_offset + total_width >= console_width) {
+        horizontal_offset = console_width - total_width - 1;
+        if (horizontal_offset < 0) horizontal_offset = 0;
+    }
+
     char left_pad[256] = {0};
     for (int p = 0; p < horizontal_offset && p < 255; p++) {
         left_pad[p] = ' ';
     }
+
+    char buffer[32768];
+    int offset = 0;
     
     // Reset cursor to top-left
     offset += sprintf(buffer + offset, "\033[H");
     
     // Render Debug Overlay only if explicitly enabled
     if (state->debug_mode) {
-        offset += sprintf(buffer + offset, "%s\033[93m[DEBUG] sens: %.2f | nr: %d | bar_max: %.2f | dt: %.4fs (%.1f FPS)\033[0m\033[K\n",
-                          left_pad, state->sens, state->noise_reduction, bar_max, dt, fps);
+        offset += sprintf(buffer + offset, "%s\033[93m[DEBUG] WxH: %dx%d | sens: %.2f | nr: %d | bar_max: %.2f | dt: %.4fs (%.1f FPS)\033[0m\033[K\n",
+                          left_pad, console_width, console_height, state->sens, state->noise_reduction, bar_max, dt, fps);
     }
     
     // Render vertical bars top-to-bottom
-    for (int row = MAX_HEIGHT - 1; row >= 0; row--) {
+    for (int row = active_height - 1; row >= 0; row--) {
         int r_val, g_val, b_val;
-        get_row_color(row, MAX_HEIGHT, &r_val, &g_val, &b_val);
+        get_row_color(row, active_height, &r_val, &g_val, &b_val);
         
         offset += sprintf(buffer + offset, "%s", left_pad);
         offset += sprintf(buffer + offset, "\033[38;2;%d;%d;%dm", r_val, g_val, b_val);
         
-        for (int col = 0; col < NUM_BARS; col++) {
-            float h = state->bars[col];
+        for (int col = 0; col < num_bars; col++) {
+            int bar_idx = (num_bars == NUM_BARS) ? col : (col * (NUM_BARS - 1)) / (num_bars - 1);
+            float h = state->bars[bar_idx];
+            
+            const char *blk;
             if (h >= row + 1) {
-                offset += sprintf(buffer + offset, " %s  ", BLOCKS[8]);
+                blk = BLOCKS[8];
             } else if (h < row) {
-                offset += sprintf(buffer + offset, " %s  ", BLOCKS[0]);
+                blk = BLOCKS[0];
             } else {
                 float fraction = h - row;
                 int idx = (int)(fraction * 8.0f + 0.5f);
                 if (idx < 0) idx = 0;
                 if (idx > 8) idx = 8;
-                offset += sprintf(buffer + offset, " %s  ", BLOCKS[idx]);
+                blk = BLOCKS[idx];
+            }
+
+            for (int s = 0; s < bar_lead_spaces; s++) {
+                buffer[offset++] = ' ';
+            }
+            for (int b = 0; b < bar_block_width; b++) {
+                offset += sprintf(buffer + offset, "%s", blk);
+            }
+            for (int s = 0; s < bar_trail_spaces; s++) {
+                buffer[offset++] = ' ';
             }
         }
         offset += sprintf(buffer + offset, "\033[0m\033[K\n");
     }
     
     // 7. Visual Spacing / Breathing Room between bars and metadata line
-    // Adding 2 empty lines for clean vertical separation
-    offset += sprintf(buffer + offset, "\033[K\n\033[K\n");
+    int space_lines = (console_height >= 16) ? 2 : 1;
+    for (int s = 0; s < space_lines; s++) {
+        offset += sprintf(buffer + offset, "\033[K\n");
+    }
     
-    // 8. Render only the Artist and Song Title
-    char info_line[256] = {0};
+    // 8. Render only the Artist and Song Title (safely truncated and centered)
+    char raw_info[256] = {0};
     int has_title = (title && strlen(title) > 0);
     int has_artist = (artist && strlen(artist) > 0);
     
     if (has_title && has_artist) {
-        snprintf(info_line, sizeof(info_line), "🎵 %s - %s", artist, title);
+        snprintf(raw_info, sizeof(raw_info), "🎵 %s - %s", artist, title);
     } else if (has_title) {
-        snprintf(info_line, sizeof(info_line), "🎵 %s", title);
+        snprintf(raw_info, sizeof(raw_info), "🎵 %s", title);
     } else if (has_artist) {
-        snprintf(info_line, sizeof(info_line), "🎵 %s", artist);
+        snprintf(raw_info, sizeof(raw_info), "🎵 %s", artist);
     } else {
-        snprintf(info_line, sizeof(info_line), "🎵 Esperando reproducción...");
+        snprintf(raw_info, sizeof(raw_info), "🎵 Esperando reproducción...");
     }
     
-    int len = (int)strlen(info_line);
-    int padding = (total_width - len) / 2;
-    if (padding < 0) padding = 0;
-    
-    offset += sprintf(buffer + offset, "%s", left_pad);
-    for (int p = 0; p < padding; p++) {
-        offset += sprintf(buffer + offset, " ");
+    char formatted_info[256] = {0};
+    int max_meta_width = console_width - 2;
+    if (max_meta_width < 10) max_meta_width = 10;
+    truncate_to_display_width(raw_info, formatted_info, sizeof(formatted_info), max_meta_width);
+
+    int info_display_width = utf8_display_width(formatted_info);
+    int info_padding = (console_width - info_display_width) / 2;
+    if (info_padding < 0) info_padding = 0;
+    if (info_padding + info_display_width >= console_width) {
+        info_padding = console_width - info_display_width - 1;
+        if (info_padding < 0) info_padding = 0;
     }
-    offset += sprintf(buffer + offset, "\033[1;38;2;255;105;180m%s\033[0m\033[K\n", info_line);
+    
+    for (int p = 0; p < info_padding; p++) {
+        buffer[offset++] = ' ';
+    }
+    offset += sprintf(buffer + offset, "\033[1;38;2;255;105;180m%s\033[0m\033[K\n", formatted_info);
     
     // Clear any extra residual lines below
     offset += sprintf(buffer + offset, "\033[K\n");
