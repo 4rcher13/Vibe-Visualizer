@@ -4,4 +4,6 @@ __pycache__/
 *.log
 *.diff
 *.o
+*.obj
+media_helper.exe
 .vscode/

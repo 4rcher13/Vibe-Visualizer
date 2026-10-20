@@ -17,8 +17,8 @@
 // Global variables for cleanup in control handler
 volatile int running = 1;
 WasapiCapture capture;
-PROCESS_INFORMATION piPython;
-BOOL pythonSpawned = FALSE;
+PROCESS_INFORMATION piHelper;
+BOOL helperSpawned = FALSE;
 
 // Console control handler for Ctrl+C and closing
 BOOL WINAPI consoleHandler(DWORD signal) {
@@ -30,12 +30,12 @@ BOOL WINAPI consoleHandler(DWORD signal) {
 }
 
 void cleanUp() {
-    // 1. Terminate background Python process if running
-    if (pythonSpawned) {
-        TerminateProcess(piPython.hProcess, 0);
-        CloseHandle(piPython.hProcess);
-        CloseHandle(piPython.hThread);
-        pythonSpawned = FALSE;
+    // 1. Terminate background metadata helper process if running
+    if (helperSpawned) {
+        TerminateProcess(piHelper.hProcess, 0);
+        CloseHandle(piHelper.hProcess);
+        CloseHandle(piHelper.hThread);
+        helperSpawned = FALSE;
     }
     
     // 2. Stop and clean up WASAPI loopback capture
@@ -119,27 +119,32 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Determine Python executable and script path for background media metadata service
+    // Determine metadata service: prefer native media_helper.exe, fallback to Python
     STARTUPINFOA si;
     ZeroMemory(&si, sizeof(si));
     si.cb = sizeof(si);
-    ZeroMemory(&piPython, sizeof(piPython));
+    ZeroMemory(&piHelper, sizeof(piHelper));
     
     char cmd[512];
-    DWORD venvAttr = GetFileAttributesA(".venv\\Scripts\\python.exe");
-    if (venvAttr != INVALID_FILE_ATTRIBUTES && !(venvAttr & FILE_ATTRIBUTE_DIRECTORY)) {
-        snprintf(cmd, sizeof(cmd), ".venv\\Scripts\\python.exe scripts\\get_media.py");
+    DWORD helperAttr = GetFileAttributesA("media_helper.exe");
+    if (helperAttr != INVALID_FILE_ATTRIBUTES && !(helperAttr & FILE_ATTRIBUTE_DIRECTORY)) {
+        snprintf(cmd, sizeof(cmd), "media_helper.exe %lu", GetCurrentProcessId());
     } else {
-        snprintf(cmd, sizeof(cmd), "python scripts/get_media.py");
+        DWORD venvAttr = GetFileAttributesA(".venv\\Scripts\\python.exe");
+        if (venvAttr != INVALID_FILE_ATTRIBUTES && !(venvAttr & FILE_ATTRIBUTE_DIRECTORY)) {
+            snprintf(cmd, sizeof(cmd), ".venv\\Scripts\\python.exe scripts\\get_media.py");
+        } else {
+            snprintf(cmd, sizeof(cmd), "python scripts/get_media.py");
+        }
     }
 
-    if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &piPython)) {
-        pythonSpawned = TRUE;
+    if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &piHelper)) {
+        helperSpawned = TRUE;
     } else {
         // Fallback attempt to root path if script is located in current directory
         char fallbackCmd[] = "python get_media.py";
-        if (CreateProcessA(NULL, fallbackCmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &piPython)) {
-            pythonSpawned = TRUE;
+        if (CreateProcessA(NULL, fallbackCmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &piHelper)) {
+            helperSpawned = TRUE;
         }
     }
 
